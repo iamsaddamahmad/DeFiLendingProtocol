@@ -1,0 +1,94 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 200
+solc_version = "0.8.20"
+
+# =============================================================================
+# RPC ENDPOINTS — reference these by name with --rpc-url <name>
+# e.g. forge script script/DeployMyToken.s.sol --rpc-url sepolia --broadcast
+# =============================================================================
+[rpc_endpoints]
+# --- Testnets ---
+sepolia            = "${SEPOLIA_RPC_URL}"
+holesky            = "${HOLESKY_RPC_URL}"
+arbitrum_sepolia   = "${ARBITRUM_SEPOLIA_RPC_URL}"
+optimism_sepolia   = "${OPTIMISM_SEPOLIA_RPC_URL}"
+base_sepolia       = "${BASE_SEPOLIA_RPC_URL}"
+polygon_amoy       = "${POLYGON_AMOY_RPC_URL}"
+bsc_testnet        = "${BSC_TESTNET_RPC_URL}"
+avalanche_fuji     = "${AVALANCHE_FUJI_RPC_URL}"
+fantom_testnet     = "${FANTOM_TESTNET_RPC_URL}"
+celo_alfajores     = "${CELO_ALFAJORES_RPC_URL}"
+gnosis_chiado      = "${GNOSIS_CHIADO_RPC_URL}"
+linea_sepolia      = "${LINEA_SEPOLIA_RPC_URL}"
+scroll_sepolia     = "${SCROLL_SEPOLIA_RPC_URL}"
+zksync_sepolia     = "${ZKSYNC_SEPOLIA_RPC_URL}"
+mantle_sepolia     = "${MANTLE_SEPOLIA_RPC_URL}"
+blast_sepolia      = "${BLAST_SEPOLIA_RPC_URL}"
+
+# --- Mainnets ---
+ethereum           = "${ETHEREUM_RPC_URL}"
+arbitrum           = "${ARBITRUM_RPC_URL}"
+optimism           = "${OPTIMISM_RPC_URL}"
+base               = "${BASE_RPC_URL}"
+polygon            = "${POLYGON_RPC_URL}"
+bsc                = "${BSC_RPC_URL}"
+avalanche          = "${AVALANCHE_RPC_URL}"
+fantom             = "${FANTOM_RPC_URL}"
+celo               = "${CELO_RPC_URL}"
+gnosis             = "${GNOSIS_RPC_URL}"
+linea              = "${LINEA_RPC_URL}"
+scroll             = "${SCROLL_RPC_URL}"
+zksync             = "${ZKSYNC_RPC_URL}"
+mantle             = "${MANTLE_RPC_URL}"
+blast              = "${BLAST_RPC_URL}"
+
+# --- Local ---
+local              = "http://127.0.0.1:8545"
+
+# =============================================================================
+# EXPLORER VERIFICATION — used automatically by `--verify` when the
+# corresponding --rpc-url name above is used.
+# =============================================================================
+[etherscan]
+# --- Testnets ---
+sepolia            = { key = "${ETHERSCAN_API_KEY}" }
+holesky            = { key = "${ETHERSCAN_API_KEY}" }
+arbitrum_sepolia   = { key = "${ARBISCAN_API_KEY}" }
+optimism_sepolia   = { key = "${OPTIMISTIC_ETHERSCAN_API_KEY}" }
+base_sepolia       = { key = "${BASESCAN_API_KEY}" }
+polygon_amoy       = { key = "${POLYGONSCAN_API_KEY}" }
+bsc_testnet        = { key = "${BSCSCAN_API_KEY}" }
+avalanche_fuji     = { key = "${SNOWTRACE_API_KEY}" }
+fantom_testnet     = { key = "${FTMSCAN_API_KEY}" }
+celo_alfajores     = { key = "${CELOSCAN_API_KEY}", chain = 44787, url = "https://api-alfajores.celoscan.io/api" }
+gnosis_chiado      = { key = "${GNOSISSCAN_API_KEY}", chain = 10200, url = "https://gnosis-chiado.blockscout.com/api" }
+linea_sepolia      = { key = "${LINEASCAN_API_KEY}" }
+scroll_sepolia     = { key = "${SCROLLSCAN_API_KEY}" }
+zksync_sepolia     = { key = "${ZKSYNC_EXPLORER_API_KEY}", chain = 300, url = "https://explorer.sepolia.era.zksync.dev/contract_verification" }
+mantle_sepolia     = { key = "${MANTLESCAN_API_KEY}", chain = 5003, url = "https://api-sepolia.mantlescan.xyz/api" }
+blast_sepolia      = { key = "${BLASTSCAN_API_KEY}", chain = 168587773, url = "https://api-sepolia.blastscan.io/api" }
+
+# --- Mainnets ---
+ethereum           = { key = "${ETHERSCAN_API_KEY}" }
+arbitrum           = { key = "${ARBISCAN_API_KEY}" }
+optimism           = { key = "${OPTIMISTIC_ETHERSCAN_API_KEY}" }
+base               = { key = "${BASESCAN_API_KEY}" }
+polygon            = { key = "${POLYGONSCAN_API_KEY}" }
+bsc                = { key = "${BSCSCAN_API_KEY}" }
+avalanche          = { key = "${SNOWTRACE_API_KEY}" }
+fantom             = { key = "${FTMSCAN_API_KEY}" }
+celo               = { key = "${CELOSCAN_API_KEY}", chain = 42220, url = "https://api.celoscan.io/api" }
+gnosis             = { key = "${GNOSISSCAN_API_KEY}", chain = 100, url = "https://api.gnosisscan.io/api" }
+linea              = { key = "${LINEASCAN_API_KEY}" }
+scroll             = { key = "${SCROLLSCAN_API_KEY}" }
+zksync             = { key = "${ZKSYNC_EXPLORER_API_KEY}", chain = 324, url = "https://explorer.era.zksync.io/contract_verification" }
+mantle             = { key = "${MANTLESCAN_API_KEY}", chain = 5000, url = "https://api.mantlescan.xyz/api" }
+blast              = { key = "${BLASTSCAN_API_KEY}", chain = 81457, url = "https://api.blastscan.io/api" }
+
+[fmt]
+line_length = 120
+tab_width = 4
