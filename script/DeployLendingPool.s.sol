@@ -18,6 +18,7 @@ contract DeployLendingPool is Script {
         uint256 ltvBps = vm.envUint("LOAN_TO_VALUE_BPS");
         uint256 liqThresholdBps = vm.envUint("LIQUIDATION_THRESHOLD_BPS");
         uint256 liqBonusBps = vm.envUint("LIQUIDATION_BONUS_BPS");
+        uint256 interestRateBps = vm.envUint("ANNUAL_INTEREST_RATE_BPS");
         address owner = vm.envAddress("TOKEN_OWNER");
 
         vm.startBroadcast(deployerPrivateKey);
@@ -32,6 +33,7 @@ contract DeployLendingPool is Script {
             ltvBps,
             liqThresholdBps,
             liqBonusBps,
+            interestRateBps,
             owner
         );
         console.log("Lending pool deployed to:", address(pool));

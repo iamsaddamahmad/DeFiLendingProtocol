@@ -41,16 +41,47 @@ their codebases.
 1. **Deposit collateral** — lock an ERC20 (e.g. a stablecoin) into the pool.
 2. **Borrow** — draw a different ERC20 against that collateral, up to
    `loanToValueBps` (e.g. 66%) of its current value.
-3. **Repay** — pay back borrowed tokens to reduce debt and free up
-   collateral for withdrawal.
-4. **Withdraw collateral** — allowed any time it wouldn't push the
-   remaining position over its loan-to-value limit.
-5. **Liquidation** — if a position's debt rises above
-   `liquidationThresholdBps` of its collateral value (e.g. because the
-   collateral's price drops), *anyone* can repay that debt and receive the
+3. **Interest accrues** — debt grows over time at `annualInterestRateBps`
+   (linear, non-compounding), calculated fresh on every deposit, borrow,
+   repay, or liquidation check — see [Interest model](#interest-model).
+4. **Repay** — pay back borrowed tokens (interest first, then principal) to
+   reduce debt and free up collateral for withdrawal.
+5. **Withdraw collateral** — allowed any time it wouldn't push the
+   remaining position (including accrued interest) over its loan-to-value
+   limit.
+6. **Liquidation** — if a position's total debt (principal + interest)
+   rises above `liquidationThresholdBps` of its collateral value — because
+   the collateral's price drops, because enough time and interest has
+   passed, or both — *anyone* can repay that debt and receive the
    collateral plus a bonus (`liquidationBonusBps`). This is the incentive
    mechanism that keeps the protocol solvent without relying on a trusted
    party to monitor positions.
+
+## Interest model
+
+Interest is **linear (simple), not compounding**:
+
+```
+interest = principal × annualInterestRateBps × secondsElapsed
+           ────────────────────────────────────────────────
+                  10,000 × secondsPerYear
+```
+
+This was a deliberate choice over a compounding model. Compounding interest
+on-chain requires careful fixed-point math to avoid precision loss or
+overflow across long time periods, and a simpler, provably correct model
+was preferred over a compounding one implemented incorrectly. A production
+protocol (Aave, Compound) uses a compounding, utilization-based rate — a
+meaningfully larger and separate engineering problem from what this repo
+demonstrates.
+
+Two read functions expose debt:
+- `totalDebt(user)` — principal + interest accrued as of the last on-chain
+  update (cheap, but can be stale if no transaction has touched the
+  position recently)
+- `currentDebt(user)` — principal + interest computed live, including time
+  elapsed since the last update, without needing a transaction first (use
+  this for anything time-sensitive, like checking `isLiquidatable`)
 
 ## Setup
 
@@ -69,14 +100,23 @@ Fill in `.env` with real values — **never commit this file**.
 forge test -vv
 ```
 
-11 tests, including:
+14 tests, including:
 - Deposit, borrow within limits, repay, withdrawal health checks
 - Rejection of borrows that exceed the loan-to-value ratio
 - Rejection of withdrawals that would under-collateralize a position
-- **A full liquidation scenario**: a healthy position, a simulated price
-  crash via the mock oracle, confirmation the position becomes
-  liquidatable, and a liquidator profiting from the bonus — the complete
-  mechanism, not just isolated pieces
+- **Interest accrual over exactly one year**, confirming a 5% APR position
+  accrues exactly 500 in interest on a 10,000 principal — not just that
+  interest exists, but that the math is correct
+- **Partial-year interest** accrual, confirming proportional accrual for
+  a non-whole-year time span
+- **Repayment order**: confirms interest is paid down before principal
+- **A full price-crash liquidation scenario**: a healthy position, a
+  simulated price crash via the mock oracle, confirmation the position
+  becomes liquidatable, and a liquidator profiting from the bonus
+- **A liquidation-by-interest-alone scenario**: confirms a position at the
+  borrowing limit can become liquidatable purely from accrued interest
+  over time, with no price movement at all — a distinct trigger from price
+  risk
 - A fuzz test confirming positions opened at the maximum allowed
   loan-to-value are never immediately liquidatable at the same price
 
@@ -98,21 +138,29 @@ Same pattern works on any network defined in `foundry.toml` — swap
 
 ## Deployed addresses (Sepolia testnet)
 
+### Current — with interest accrual
+
 | Contract | Address | Explorer |
 |---|---|---|
 | Collateral token (USDT_TEST, stablecoin stand-in) | `0xf7776eDcE20AF5048fDE7a500449E317C570C698` | [View](https://sepolia.etherscan.io/address/0xf7776edce20af5048fde7a500449e317c570c698#code) |
 | Borrow token (MyToken / MTK, from the [token repo](https://github.com/iamsaddamahmad/MultichainContract)) | `0x4602E3EDc16d24457C7Af5f286e89a43e7575119` | [View](https://sepolia.etherscan.io/address/0x4602e3edc16d24457c7af5f286e89a43e7575119#code) |
-| Price oracle | `0x645d4a9B80BCA3Ea0212B6100b204C274f5D75cC` | [View](https://sepolia.etherscan.io/address/0x645d4a9b80bca3ea0212b6100b204c274f5d75cc#code) |
-| Lending pool | `0x47541b746357f5d2C5728572769A86906aD65478` | [View](https://sepolia.etherscan.io/address/0x47541b746357f5d2c5728572769a86906ad65478#code) |
+| Price oracle | `0x2868651e67A85f6CA48e013fc173E2023A80BAe4` | [View](https://sepolia.etherscan.io/address/0x2868651e67a85f6ca48e013fc173e2023a80bae4#code) |
+| Lending pool | `0x1b6A211716598c7fAcAD4EeB561748004CEFCBF3` | [View](https://sepolia.etherscan.io/address/0x1b6a211716598c7facad4eeb561748004cefcbf3#code) |
 
 **Live parameters:** 66% loan-to-value, 80% liquidation threshold, 5%
-liquidation bonus, oracle price fixed at 1 collateral token = 2,000 borrow
-tokens (arbitrary demo ratio, manually settable by the owner).
+liquidation bonus, **5% APR interest (linear)**, oracle price fixed at
+1 collateral token = 2,000 borrow tokens (arbitrary demo ratio, manually
+settable by the owner).
 
-A real deposit → borrow cycle has been executed and verified on this
-deployment: 10 collateral tokens deposited, 5,000 borrow tokens drawn
-against them (well within the 13,200 maximum allowed at that collateral
-level), confirmed via `positions()` on-chain.
+### Superseded — pre-interest version
+
+| Contract | Address | Status |
+|---|---|---|
+| Lending pool (no interest) | `0x47541b746357f5d2C5728572769A86906aD65478` | Superseded — kept for reference |
+| Price oracle (paired with above) | `0x645d4a9B80BCA3Ea0212B6100b204C274f5D75cC` | Superseded |
+
+A real deposit → borrow cycle has been executed and verified on the
+current deployment.
 
 ## Interacting with the deployed contracts
 
@@ -171,8 +219,8 @@ This is an educational implementation of the core mechanics, not
 production-grade lending infrastructure. Specifically missing, compared to
 protocols like Aave or Compound:
 
-- **No interest accrual** — borrowing is currently interest-free; a real
-  protocol accrues interest over time based on utilization
+- **Linear, not compounding, interest** — see [Interest model](#interest-model)
+  for why this was a deliberate simplification
 - **Mock price oracle, not a decentralized one** — `MockPriceOracle` is a
   single owner-settable value. This is a critical centralization and
   manipulation risk in any deployment holding real value; production

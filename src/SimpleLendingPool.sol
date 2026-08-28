@@ -10,51 +10,46 @@ import "./MockPriceOracle.sol";
 
 /// @title SimpleLendingPool
 /// @notice A simplified crypto-backed lending protocol: deposit collateral,
-///         borrow against it up to a loan-to-value ratio, repay, and
-///         liquidate positions that fall below the liquidation threshold.
-/// @dev EDUCATIONAL / DEMO CONTRACT. Not audited. Missing several things a
-///      real lending protocol needs before holding real value:
-///        - Interest accrual (this version charges 0% interest)
-///        - A decentralized price oracle (uses MockPriceOracle — see its
-///          own NatSpec for why that matters)
-///        - Partial liquidation logic (this version liquidates the entire
-///          position at once, which is simpler but less capital-efficient
-///          and can produce large liquidator payouts on big positions)
-///        - Protection against oracle price staleness
-///      Each of these is a real, separate engineering problem in
-///      production protocols like Aave and Compound. This contract exists
-///      to demonstrate the core mechanics correctly and safely on a small
-///      scale, not to replace that engineering.
+///         borrow against it up to a loan-to-value ratio, repay accrued
+///         interest plus principal, and liquidate positions that fall
+///         below the liquidation threshold.
+/// @dev EDUCATIONAL / DEMO CONTRACT. Not audited. Interest uses a simple
+///      linear (non-compounding) model — `interest = principal * rate *
+///      elapsedTime / (BPS_DENOMINATOR * SECONDS_PER_YEAR)` — deliberately
+///      chosen over compound interest for this version: compounding on-chain
+///      needs careful fixed-point math to avoid precision loss or overflow,
+///      and getting that subtly wrong is a worse outcome than a simpler,
+///      provably correct model. A production protocol would likely use a
+///      compounding, utilization-based rate (like Aave's), which is a
+///      meaningfully larger and separate engineering problem from what's
+///      demonstrated here.
+///
+///      Still missing before real-value use: a decentralized price oracle
+///      (uses MockPriceOracle — see its own NatSpec), partial liquidation,
+///      oracle staleness checks, and a professional audit.
 contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     using SafeERC20 for IERC20;
 
-    /// @notice The token users deposit as collateral.
     IERC20 public immutable collateralToken;
-
-    /// @notice The token users borrow.
     IERC20 public immutable borrowToken;
-
-    /// @notice Price oracle: price of collateral, denominated in borrowToken.
     MockPriceOracle public immutable oracle;
 
-    /// @notice Maximum borrow as a percentage of collateral value, in basis
-    ///         points (e.g. 6600 = 66%). Set at deployment, immutable.
     uint256 public immutable loanToValueBps;
-
-    /// @notice Collateral ratio below which a position becomes liquidatable,
-    ///         in basis points (e.g. 8000 = position liquidatable once debt
-    ///         reaches 80% of collateral value). Must be > loanToValueBps.
     uint256 public immutable liquidationThresholdBps;
-
-    /// @notice Bonus paid to liquidators, in basis points of the collateral
-    ///         they seize (e.g. 500 = 5% bonus).
     uint256 public immutable liquidationBonusBps;
 
+    /// @notice Annual interest rate on borrowed amounts, in basis points
+    ///         (e.g. 500 = 5% APR). Fixed at deployment.
+    uint256 public immutable annualInterestRateBps;
+
     uint256 private constant BPS_DENOMINATOR = 10_000;
+    uint256 private constant SECONDS_PER_YEAR = 365 days;
 
     struct Position {
         uint256 collateral;
-        uint256 debt;
+        uint256 principal; // borrowed amount, excluding interest
+        uint256 accruedInterest; // interest accumulated as of lastUpdate
+        uint256 lastUpdate; // timestamp interest was last accrued
     }
 
     mapping(address => Position) public positions;
@@ -63,6 +58,7 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     event CollateralWithdrawn(address indexed user, uint256 amount);
     event Borrowed(address indexed user, uint256 amount);
     event Repaid(address indexed user, uint256 amount);
+    event InterestAccrued(address indexed user, uint256 interestAmount);
     event Liquidated(
         address indexed borrower,
         address indexed liquidator,
@@ -79,16 +75,6 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     error RepayExceedsDebt(uint256 requested, uint256 currentDebt);
     error InvalidThresholds();
 
-    /// @param collateralToken_ ERC20 accepted as collateral.
-    /// @param borrowToken_ ERC20 that can be borrowed.
-    /// @param oracle_ Price oracle for collateralToken, denominated in borrowToken.
-    /// @param loanToValueBps_ Max borrow as % of collateral value (basis points).
-    /// @param liquidationThresholdBps_ Debt/collateral ratio that triggers
-    ///        liquidation eligibility (basis points). Must exceed loanToValueBps_
-    ///        so a healthy position always has room before liquidation.
-    /// @param liquidationBonusBps_ Liquidator bonus on seized collateral (basis points).
-    /// @param initialOwner Owner address (pause control only — this contract
-    ///        has no admin minting or fund-withdrawal power over user funds).
     constructor(
         address collateralToken_,
         address borrowToken_,
@@ -96,6 +82,7 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
         uint256 loanToValueBps_,
         uint256 liquidationThresholdBps_,
         uint256 liquidationBonusBps_,
+        uint256 annualInterestRateBps_,
         address initialOwner
     ) Ownable(initialOwner) {
         if (
@@ -113,120 +100,157 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
         loanToValueBps = loanToValueBps_;
         liquidationThresholdBps = liquidationThresholdBps_;
         liquidationBonusBps = liquidationBonusBps_;
+        annualInterestRateBps = annualInterestRateBps_;
     }
 
-    /// @notice Deposit collateral into your position.
+    /// @dev Accrues interest on `user`'s position up to the current block
+    ///      timestamp, moving it from "not yet counted" into
+    ///      `accruedInterest`. Must be called before any function that
+    ///      reads or changes debt, so debt is always current.
+    function _accrue(address user) internal {
+        Position storage pos = positions[user];
+        if (pos.lastUpdate == 0) {
+            pos.lastUpdate = block.timestamp;
+            return;
+        }
+        uint256 elapsed = block.timestamp - pos.lastUpdate;
+        if (elapsed == 0 || pos.principal == 0) {
+            pos.lastUpdate = block.timestamp;
+            return;
+        }
+        uint256 interest = (pos.principal * annualInterestRateBps * elapsed)
+            / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
+        if (interest > 0) {
+            pos.accruedInterest += interest;
+            emit InterestAccrued(user, interest);
+        }
+        pos.lastUpdate = block.timestamp;
+    }
+
+    /// @notice Total debt (principal + accrued interest) for `user`, as of
+    ///         the last time it was accrued on-chain. For a view of debt
+    ///         accrued up to *right now* (including time since the last
+    ///         transaction), use `currentDebt`.
+    function totalDebt(address user) public view returns (uint256) {
+        Position memory pos = positions[user];
+        return pos.principal + pos.accruedInterest;
+    }
+
+    /// @notice Debt including interest accrued up to this exact block,
+    ///         without needing a transaction first.
+    function currentDebt(address user) public view returns (uint256) {
+        Position memory pos = positions[user];
+        if (pos.lastUpdate == 0 || pos.principal == 0) {
+            return pos.principal + pos.accruedInterest;
+        }
+        uint256 elapsed = block.timestamp - pos.lastUpdate;
+        uint256 pendingInterest = (pos.principal * annualInterestRateBps * elapsed)
+            / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
+        return pos.principal + pos.accruedInterest + pendingInterest;
+    }
+
     function depositCollateral(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
+        _accrue(msg.sender);
 
-        // Effects before interaction (checks-effects-interactions pattern).
         positions[msg.sender].collateral += amount;
-
         emit CollateralDeposited(msg.sender, amount);
 
         collateralToken.safeTransferFrom(msg.sender, address(this), amount);
     }
 
-    /// @notice Withdraw collateral, as long as the position stays within
-    ///         the loan-to-value ratio afterward.
     function withdrawCollateral(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
+        _accrue(msg.sender);
         Position storage pos = positions[msg.sender];
         if (pos.collateral < amount) revert InsufficientCollateral();
 
         uint256 newCollateral = pos.collateral - amount;
+        uint256 debt = pos.principal + pos.accruedInterest;
         uint256 maxBorrowAfter = _maxBorrow(newCollateral);
-        if (pos.debt > maxBorrowAfter) revert WithdrawalWouldUnderCollateralize();
+        if (debt > maxBorrowAfter) revert WithdrawalWouldUnderCollateralize();
 
         pos.collateral = newCollateral;
-
         emit CollateralWithdrawn(msg.sender, amount);
 
         collateralToken.safeTransfer(msg.sender, amount);
     }
 
-    /// @notice Borrow against deposited collateral, up to the loan-to-value limit.
     function borrow(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
+        _accrue(msg.sender);
         Position storage pos = positions[msg.sender];
 
-        uint256 newDebt = pos.debt + amount;
+        uint256 newDebt = pos.principal + pos.accruedInterest + amount;
         uint256 maxBorrowable = _maxBorrow(pos.collateral);
         if (newDebt > maxBorrowable) {
             revert ExceedsLoanToValue(newDebt, maxBorrowable);
         }
 
-        pos.debt = newDebt;
-
+        pos.principal += amount;
         emit Borrowed(msg.sender, amount);
 
         borrowToken.safeTransfer(msg.sender, amount);
     }
 
-    /// @notice Repay borrowed tokens, reducing your debt.
+    /// @notice Repay debt. Interest is repaid first, then principal.
     function repay(uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert ZeroAmount();
+        _accrue(msg.sender);
         Position storage pos = positions[msg.sender];
-        if (amount > pos.debt) revert RepayExceedsDebt(amount, pos.debt);
+        uint256 debt = pos.principal + pos.accruedInterest;
+        if (amount > debt) revert RepayExceedsDebt(amount, debt);
 
-        pos.debt -= amount;
+        if (amount <= pos.accruedInterest) {
+            pos.accruedInterest -= amount;
+        } else {
+            uint256 remainder = amount - pos.accruedInterest;
+            pos.accruedInterest = 0;
+            pos.principal -= remainder;
+        }
 
         emit Repaid(msg.sender, amount);
 
         borrowToken.safeTransferFrom(msg.sender, address(this), amount);
     }
 
-    /// @notice Liquidate an under-collateralized position. The liquidator
-    ///         repays the borrower's full debt and receives their collateral
-    ///         plus a bonus, as long as enough collateral exists to cover it.
-    /// @dev Whole-position liquidation only (no partial liquidation) —
-    ///      a real production protocol would typically allow partial
-    ///      liquidation to reduce liquidator capital requirements and
-    ///      market impact.
     function liquidate(address borrower) external nonReentrant whenNotPaused {
+        _accrue(borrower);
         Position storage pos = positions[borrower];
-        if (pos.debt == 0) revert PositionIsHealthy();
-        if (!_isLiquidatable(pos)) revert PositionIsHealthy();
+        uint256 debt = pos.principal + pos.accruedInterest;
+        if (debt == 0) revert PositionIsHealthy();
+        if (!_isLiquidatable(pos.collateral, debt)) revert PositionIsHealthy();
 
-        uint256 debtToRepay = pos.debt;
         uint256 collateralValue = _collateralValue(pos.collateral);
-
-        // Liquidator receives collateral proportional to debt repaid, plus bonus,
-        // capped at the position's total collateral.
-        uint256 seizeValue = debtToRepay + (debtToRepay * liquidationBonusBps / BPS_DENOMINATOR);
-        uint256 collateralToSeize = collateralValue == 0
-            ? 0
-            : (seizeValue * pos.collateral) / collateralValue;
+        uint256 seizeValue = debt + (debt * liquidationBonusBps / BPS_DENOMINATOR);
+        uint256 collateralToSeize =
+            collateralValue == 0 ? 0 : (seizeValue * pos.collateral) / collateralValue;
         if (collateralToSeize > pos.collateral) {
             collateralToSeize = pos.collateral;
         }
 
-        pos.debt = 0;
+        pos.principal = 0;
+        pos.accruedInterest = 0;
         pos.collateral -= collateralToSeize;
 
-        emit Liquidated(borrower, msg.sender, debtToRepay, collateralToSeize);
+        emit Liquidated(borrower, msg.sender, debt, collateralToSeize);
 
-        borrowToken.safeTransferFrom(msg.sender, address(this), debtToRepay);
+        borrowToken.safeTransferFrom(msg.sender, address(this), debt);
         collateralToken.safeTransfer(msg.sender, collateralToSeize);
     }
 
-    /// @notice Pause all deposits, borrows, repayments, and liquidations.
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Resume normal operation.
     function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Whether a given position can currently be liquidated.
     function isLiquidatable(address user) external view returns (bool) {
-        return _isLiquidatable(positions[user]);
+        return _isLiquidatable(positions[user].collateral, currentDebt(user));
     }
 
-    /// @notice Maximum amount a user could currently borrow in total,
-    ///         given their existing collateral (not accounting for existing debt).
     function maxBorrow(address user) external view returns (uint256) {
         return _maxBorrow(positions[user].collateral);
     }
@@ -239,10 +263,9 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
         return (collateralAmount * oracle.price()) / 1e18;
     }
 
-    function _isLiquidatable(Position memory pos) internal view returns (bool) {
-        if (pos.debt == 0) return false;
-        uint256 liquidationDebtCap =
-            (_collateralValue(pos.collateral) * liquidationThresholdBps) / BPS_DENOMINATOR;
-        return pos.debt > liquidationDebtCap;
+    function _isLiquidatable(uint256 collateralAmount, uint256 debt) internal view returns (bool) {
+        if (debt == 0) return false;
+        uint256 liquidationDebtCap = (_collateralValue(collateralAmount) * liquidationThresholdBps) / BPS_DENOMINATOR;
+        return debt > liquidationDebtCap;
     }
 }
