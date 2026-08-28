@@ -1,0 +1,13 @@
+{
+  "filter_paths": "lib/",
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "exclude": [
+    "pragma",
+    "solc-version",
+    "unindexed-event-address",
+    "naming-convention"
+  ]
+}

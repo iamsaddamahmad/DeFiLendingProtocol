@@ -1,35 +1,45 @@
-name: CI
-
-permissions: {}
+name: Foundry CI
 
 on:
   push:
+    branches: [main, develop]
   pull_request:
-  workflow_dispatch:
+    branches: [main, develop]
 
 jobs:
-  check:
-    name: Foundry project
+  test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
-          persist-credentials: false
           submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Show Forge version
-        run: forge --version
+      - name: Run tests
+        run: forge test -vvv
 
-      - name: Run Forge fmt
+      - name: Gas report
+        run: forge test --gas-report
+
+      - name: Check formatting
         run: forge fmt --check
 
-      - name: Run Forge build
-        run: forge build --sizes
+  slither:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Run Forge tests
-        run: forge test -vvv
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run Slither
+        uses: crytic/slither-action@v0.4.0
+        id: slither
+        with:
+          target: 'src/'
+          slither-config: 'slither.config.json'
+          fail-on: high
