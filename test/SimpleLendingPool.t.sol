@@ -23,11 +23,13 @@ contract SimpleLendingPoolTest is Test {
     address owner = address(this);
     address alice = address(0x1);
     address bob = address(0x2);
+    address carol = address(0x3);
 
     uint256 constant LTV_BPS = 6_600;
     uint256 constant LIQ_THRESHOLD_BPS = 8_000;
     uint256 constant LIQ_BONUS_BPS = 500;
     uint256 constant INTEREST_RATE_BPS = 500; // 5% APR
+    uint256 constant CLOSE_FACTOR_BPS = 5_000; // 50% max per liquidation call
     uint256 constant INITIAL_PRICE = 2_000e18;
 
     function setUp() public {
@@ -43,6 +45,7 @@ contract SimpleLendingPoolTest is Test {
             LIQ_THRESHOLD_BPS,
             LIQ_BONUS_BPS,
             INTEREST_RATE_BPS,
+            CLOSE_FACTOR_BPS,
             owner
         );
 
@@ -52,15 +55,32 @@ contract SimpleLendingPoolTest is Test {
         vm.prank(alice);
         collateralToken.approve(address(pool), type(uint256).max);
 
+        vm.prank(alice);
+        borrowToken.approve(address(pool), type(uint256).max);
+
         borrowToken.mint(bob, 1_000_000e18);
         vm.startPrank(bob);
         borrowToken.approve(address(pool), type(uint256).max);
         collateralToken.approve(address(pool), type(uint256).max);
         vm.stopPrank();
 
-        vm.prank(alice);
+        borrowToken.mint(carol, 1_000_000e18);
+        vm.startPrank(carol);
         borrowToken.approve(address(pool), type(uint256).max);
+        collateralToken.approve(address(pool), type(uint256).max);
+        vm.stopPrank();
     }
+
+    function _openUnderwaterPosition() internal {
+        vm.startPrank(alice);
+        pool.depositCollateral(10e18); // worth 20,000 at price 2000
+        pool.borrow(13_200e18); // 66% LTV, healthy for now
+        vm.stopPrank();
+
+        oracle.setPrice(1_000e18); // collateral now worth 10,000 — deeply underwater
+    }
+
+    // --- Original coverage ---
 
     function testDepositCollateral() public {
         vm.prank(alice);
@@ -118,8 +138,6 @@ contract SimpleLendingPoolTest is Test {
         vm.warp(block.timestamp + 182 days + 12 hours); // ~half a year
 
         uint256 debt = pool.currentDebt(alice);
-        // Should be close to 10,250 (half of 500 annual interest), allowing
-        // for integer-division rounding.
         assertApproxEqAbs(debt, 10_250e18, 1e18);
     }
 
@@ -203,9 +221,6 @@ contract SimpleLendingPoolTest is Test {
 
         assertFalse(pool.isLiquidatable(alice));
 
-        // Liquidation threshold is 80% of 20,000 = 16,000.
-        // At 5% APR on 13,200 principal, reaching 16,000 total debt takes
-        // multiple years of accrual (linear model) — warp far enough forward.
         vm.warp(block.timestamp + 365 days * 5);
 
         assertTrue(pool.isLiquidatable(alice));
@@ -245,5 +260,78 @@ contract SimpleLendingPoolTest is Test {
         vm.stopPrank();
 
         assertFalse(pool.isLiquidatable(alice));
+    }
+
+    // --- New: partial liquidation coverage ---
+
+    function testMaxLiquidatableIsCloseFactorOfDebt() public {
+        _openUnderwaterPosition();
+        assertEq(pool.maxLiquidatable(alice), 6_600e18); // 50% of 13,200
+    }
+
+    function testCannotLiquidatePartialPastCloseFactor() public {
+        _openUnderwaterPosition();
+        uint256 limit = pool.maxLiquidatable(alice);
+
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(SimpleLendingPool.ExceedsCloseFactor.selector, limit + 1, limit)
+        );
+        pool.liquidatePartial(alice, limit + 1);
+    }
+
+    function testPartialLiquidationReducesDebtProportionally() public {
+        _openUnderwaterPosition();
+        uint256 limit = pool.maxLiquidatable(alice);
+
+        uint256 bobCollateralBefore = collateralToken.balanceOf(bob);
+
+        vm.prank(bob);
+        pool.liquidatePartial(alice, limit);
+
+        assertEq(pool.totalDebt(alice), 13_200e18 - limit);
+        assertGt(collateralToken.balanceOf(bob), bobCollateralBefore);
+        assertTrue(pool.isLiquidatable(alice));
+    }
+
+    /// @dev Two separate liquidators each partially liquidate the same
+    ///      position in turn, fully closing it across two transactions —
+    ///      proving partial liquidation composes correctly with itself.
+    function testTwoPartialLiquidationsFullyCloseDebt() public {
+        _openUnderwaterPosition();
+
+        uint256 firstLimit = pool.maxLiquidatable(alice); // 6,600
+        vm.prank(bob);
+        pool.liquidatePartial(alice, firstLimit);
+
+        assertEq(pool.totalDebt(alice), 13_200e18 - firstLimit);
+
+        uint256 secondLimit = pool.maxLiquidatable(alice);
+        vm.prank(carol);
+        pool.liquidatePartial(alice, secondLimit);
+
+        assertEq(pool.totalDebt(alice), 13_200e18 - firstLimit - secondLimit);
+    }
+
+    function testFullLiquidationStillWorksAlongsidePartial() public {
+        _openUnderwaterPosition();
+
+        uint256 debtBefore = pool.totalDebt(alice);
+        vm.prank(bob);
+        pool.liquidate(alice); // full liquidation, ignoring the close factor
+
+        assertEq(pool.totalDebt(alice), 0);
+        assertGt(debtBefore, 0);
+    }
+
+    function testCannotPartiallyLiquidateHealthyPosition() public {
+        vm.startPrank(alice);
+        pool.depositCollateral(10e18);
+        pool.borrow(1_000e18);
+        vm.stopPrank();
+
+        vm.prank(bob);
+        vm.expectRevert(SimpleLendingPool.PositionIsHealthy.selector);
+        pool.liquidatePartial(alice, 100e18);
     }
 }

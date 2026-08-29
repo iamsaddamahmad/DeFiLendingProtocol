@@ -17,13 +17,17 @@ original holdings — exactly the pattern real lending markets use.
 ```
 .
 ├── src/
-│   ├── SimpleLendingPool.sol   # Core lending logic
-│   └── MockPriceOracle.sol     # Owner-settable price feed (stands in for Chainlink)
+│   ├── SimpleLendingPool.sol      # Core lending logic
+│   ├── IPriceOracle.sol           # Shared price interface — pool works with either oracle below
+│   ├── MockPriceOracle.sol        # Owner-settable price feed, for testing/demos
+│   └── ChainlinkPriceOracle.sol   # Real decentralized price feed adapter, for actual deployments
 ├── script/
-│   ├── DeployLendingPool.s.sol       # Deploys oracle + pool together
-│   └── DeployLendingPoolOnly.s.sol   # Deploys just the pool, given an existing oracle
+│   ├── DeployLendingPool.s.sol       # Deploys mock oracle + pool together
+│   ├── DeployLendingPoolOnly.s.sol   # Deploys just the pool, given an existing oracle
+│   └── DeployChainlinkPool.s.sol     # Deploys Chainlink oracle + pool together
 ├── test/
-│   └── SimpleLendingPool.t.sol # Unit + fuzz tests, including a full liquidation scenario
+│   ├── SimpleLendingPool.t.sol       # Unit + fuzz tests, including interest accrual and liquidation
+│   └── ChainlinkPriceOracle.t.sol    # Oracle adapter tests: decimal rescaling, staleness rejection
 ├── foundry.toml                # Multi-chain RPC + explorer config
 └── .env.example                # Required environment variables
 ```
@@ -56,6 +60,26 @@ their codebases.
    collateral plus a bonus (`liquidationBonusBps`). This is the incentive
    mechanism that keeps the protocol solvent without relying on a trusted
    party to monitor positions.
+
+## Price oracles
+
+The pool depends on `IPriceOracle`, a one-function interface
+(`price() returns (uint256)`), not on any specific oracle implementation —
+swapping oracles requires no changes to `SimpleLendingPool` itself, only a
+different address at deployment.
+
+**`ChainlinkPriceOracle`** — what real deployments use. Wraps a live
+Chainlink `AggregatorV3Interface` price feed, rescales its answer to 18
+decimals, and **reverts if the feed is stale** (hasn't updated within
+`maxStaleness`) or reports a non-positive price — both are real failure
+modes a production system must handle explicitly rather than trust blindly.
+
+**`MockPriceOracle`** — owner-settable, for local testing and demos where
+deterministic, controllable prices matter (e.g. simulating a price crash in
+a test, as `SimpleLendingPool.t.sol` does). Never intended for a deployment
+holding real value — a single owner-controlled price is a centralization
+and manipulation risk that decentralized oracles specifically exist to
+avoid.
 
 ## Interest model
 
@@ -100,7 +124,9 @@ Fill in `.env` with real values — **never commit this file**.
 forge test -vv
 ```
 
-14 tests, including:
+27 tests across two suites:
+
+`SimpleLendingPool.t.sol` (20 tests):
 - Deposit, borrow within limits, repay, withdrawal health checks
 - Rejection of borrows that exceed the loan-to-value ratio
 - Rejection of withdrawals that would under-collateralize a position
@@ -117,8 +143,26 @@ forge test -vv
   borrowing limit can become liquidatable purely from accrued interest
   over time, with no price movement at all — a distinct trigger from price
   risk
+- **Partial liquidation respects the close factor**: rejects a repay
+  amount above the limit, confirms the correct maximum
+- **Two sequential partial liquidations by different liquidators fully
+  close a position** — the close factor recalculates correctly against
+  remaining debt each time, not just once against the original amount
+- Confirmation full liquidation (`liquidate`) still works unchanged
+  alongside the new partial path (`liquidatePartial`)
 - A fuzz test confirming positions opened at the maximum allowed
   loan-to-value are never immediately liquidatable at the same price
+
+`ChainlinkPriceOracle.t.sol` (7 tests):
+- Correct rescaling from 8-decimal (typical Chainlink format) to 18-decimal
+- Correct pass-through when the feed already reports 18 decimals
+- **Staleness rejection**, including a test confirming a price just under
+  the staleness cutoff still succeeds (the boundary condition, not just
+  the failure case)
+- Rejection of zero or negative prices
+- Rejection of a zero feed address at construction
+- Confirmation that the interface swap between mock and Chainlink oracles
+  is real, not assumed — checked via a raw selector-matching call
 
 ## Deployment
 
@@ -133,34 +177,47 @@ Or, if an oracle already exists and you only need a new pool pointed at it
 forge script script/DeployLendingPoolOnly.s.sol:DeployLendingPoolOnly --rpc-url sepolia --broadcast --verify
 ```
 
+Or, deploy against a real Chainlink price feed (recommended for anything
+beyond local mock-oracle testing):
+```bash
+forge script script/DeployChainlinkPool.s.sol:DeployChainlinkPool --rpc-url sepolia --broadcast --verify
+```
+
 Same pattern works on any network defined in `foundry.toml` — swap
 `--rpc-url sepolia` for any other configured chain.
 
 ## Deployed addresses (Sepolia testnet)
 
-### Current — with interest accrual
+### Current — Chainlink-backed, with interest accrual and partial liquidation (flagship deployment)
 
 | Contract | Address | Explorer |
 |---|---|---|
 | Collateral token (USDT_TEST, stablecoin stand-in) | `0xf7776eDcE20AF5048fDE7a500449E317C570C698` | [View](https://sepolia.etherscan.io/address/0xf7776edce20af5048fde7a500449e317c570c698#code) |
 | Borrow token (MyToken / MTK, from the [token repo](https://github.com/iamsaddamahmad/MultichainContract)) | `0x4602E3EDc16d24457C7Af5f286e89a43e7575119` | [View](https://sepolia.etherscan.io/address/0x4602e3edc16d24457c7af5f286e89a43e7575119#code) |
-| Price oracle | `0x2868651e67A85f6CA48e013fc173E2023A80BAe4` | [View](https://sepolia.etherscan.io/address/0x2868651e67a85f6ca48e013fc173e2023a80bae4#code) |
-| Lending pool | `0x1b6A211716598c7fAcAD4EeB561748004CEFCBF3` | [View](https://sepolia.etherscan.io/address/0x1b6a211716598c7facad4eeb561748004cefcbf3#code) |
+| Chainlink price oracle (wraps the real Sepolia ETH/USD feed, `0x694AA1769357215DE4FAC081bf1f309aDC325306`) | `0x2Df4A9882563C39893e7EF3435DAFbb68c522F6c` | [View](https://sepolia.etherscan.io/address/0x2df4a9882563c39893e7ef3435dafbb68c522f6c#code) |
+| Lending pool | `0x037A610845d6982841939772AB1F2B95570C9317` | [View](https://sepolia.etherscan.io/address/0x037a610845d6982841939772ab1f2b95570c9317#code) |
 
 **Live parameters:** 66% loan-to-value, 80% liquidation threshold, 5%
-liquidation bonus, **5% APR interest (linear)**, oracle price fixed at
-1 collateral token = 2,000 borrow tokens (arbitrary demo ratio, manually
-settable by the owner).
+liquidation bonus, 5% APR interest (linear), **50% max close factor per
+liquidation call**, price sourced live from Chainlink's decentralized
+oracle network (confirmed reading a real price of $2,435.26 per ETH at
+deployment — not a value anyone set manually).
 
-### Superseded — pre-interest version
+### Superseded — earlier versions (kept for reference)
 
-| Contract | Address | Status |
+| Contract | Address | Notes |
 |---|---|---|
-| Lending pool (no interest) | `0x47541b746357f5d2C5728572769A86906aD65478` | Superseded — kept for reference |
-| Price oracle (paired with above) | `0x645d4a9B80BCA3Ea0212B6100b204C274f5D75cC` | Superseded |
+| Lending pool, Chainlink oracle, no partial liquidation | `0x031E2E0B0d518E2083C562474b933D17179d64e5` | Superseded — partial liquidation added since |
+| Chainlink oracle (paired with above) | `0x4D0f9e2700A5acd983154b3A5056Cec8586c6f48` | Superseded |
+| Lending pool, mock oracle, with interest | `0x1b6A211716598c7fAcAD4EeB561748004CEFCBF3` | Superseded |
+| Mock oracle (paired with above) | `0x2868651e67A85f6CA48e013fc173E2023A80BAe4` | Superseded |
+| Lending pool, mock oracle, no interest | `0x47541b746357f5d2C5728572769A86906aD65478` | Superseded — earliest version |
+| Mock oracle (paired with above) | `0x645d4a9B80BCA3Ea0212B6100b204C274f5D75cC` | Superseded |
 
 A real deposit → borrow cycle has been executed and verified on the
-current deployment.
+mock-oracle deployment; every Chainlink-backed deployment has been
+confirmed to read a live, correct price on-chain at the moment of
+deployment.
 
 ## Interacting with the deployed contracts
 
@@ -185,10 +242,18 @@ cast send <POOL_ADDRESS> "borrow(uint256)" <AMOUNT> --rpc-url sepolia --private-
 cast send <BORROW_TOKEN> "approve(address,uint256)" <POOL_ADDRESS> <AMOUNT> --rpc-url sepolia --private-key $PRIVATE_KEY
 cast send <POOL_ADDRESS> "repay(uint256)" <AMOUNT> --rpc-url sepolia --private-key $PRIVATE_KEY
 
+# Check maximum debt liquidatable in a single call right now
+cast call <POOL_ADDRESS> "maxLiquidatable(address)(uint256)" <BORROWER_ADDRESS> --rpc-url sepolia
+
 # Liquidate an under-collateralized position (as the liquidator, requires
 # approving the pool to pull the borrow token needed to repay the debt)
 cast send <BORROW_TOKEN> "approve(address,uint256)" <POOL_ADDRESS> <AMOUNT> --rpc-url sepolia --private-key $LIQUIDATOR_PRIVATE_KEY
 cast send <POOL_ADDRESS> "liquidate(address)" <BORROWER_ADDRESS> --rpc-url sepolia --private-key $LIQUIDATOR_PRIVATE_KEY
+
+# Or partially liquidate — repay up to maxLiquidatable(borrower), receive
+# a proportional share of collateral plus bonus
+cast send <BORROW_TOKEN> "approve(address,uint256)" <POOL_ADDRESS> <REPAY_AMOUNT> --rpc-url sepolia --private-key $LIQUIDATOR_PRIVATE_KEY
+cast send <POOL_ADDRESS> "liquidatePartial(address,uint256)" <BORROWER_ADDRESS> <REPAY_AMOUNT> --rpc-url sepolia --private-key $LIQUIDATOR_PRIVATE_KEY
 ```
 
 ## Security
@@ -212,6 +277,19 @@ cast send <POOL_ADDRESS> "liquidate(address)" <BORROWER_ADDRESS> --rpc-url sepol
 - **Test suite includes an actual liquidation scenario**, not just isolated
   unit assertions — a price crash is simulated, the position's liquidatable
   state is confirmed, and a liquidator's profit from the bonus is verified
+- **Oracle-agnostic design** (`IPriceOracle`) — the pool depends on a
+  one-function interface, not a concrete oracle implementation, so a real
+  Chainlink-backed deployment and a mock-oracle test deployment share
+  identical pool logic with zero code duplication or special-casing
+- **Real Chainlink integration** (`ChainlinkPriceOracle`) — deployed against
+  the actual Sepolia ETH/USD feed, with staleness rejection and non-positive
+  price rejection both implemented and tested
+- **Partial liquidation** with a close factor (`maxLiquidationCloseFactorBps`)
+  — limits how much debt can be repaid in a single liquidation call,
+  reducing the capital any one liquidator needs and market impact from a
+  single large seizure; full liquidation (`liquidate`) remains available
+  for positions small enough that the close factor no longer binds, or for
+  liquidators who simply prefer to close a position in one transaction
 
 ### Known limitations (by design, for a learning/demo project)
 
@@ -221,18 +299,9 @@ protocols like Aave or Compound:
 
 - **Linear, not compounding, interest** — see [Interest model](#interest-model)
   for why this was a deliberate simplification
-- **Mock price oracle, not a decentralized one** — `MockPriceOracle` is a
-  single owner-settable value. This is a critical centralization and
-  manipulation risk in any deployment holding real value; production
-  protocols use Chainlink Price Feeds or similar decentralized oracle
-  networks specifically to prevent any single party from moving the price
-- **Whole-position liquidation only** — a liquidatable position is
-  liquidated entirely in one transaction; real protocols typically support
-  partial liquidation to reduce liquidator capital requirements and limit
-  market impact
-- **No oracle staleness checks** — a production system would reject prices
-  that haven't updated recently, rather than trusting whatever value is
-  currently stored
+- **Single price feed, no fallback** — if the configured Chainlink feed
+  itself is compromised or deprecated, the pool has no secondary oracle to
+  fall back on; production systems often aggregate multiple sources
 - **No independent professional audit** — this contract has been reasoned
   through, tested, and run through Slither, but has not been reviewed by a
   human security researcher. See the token repo's README for a fuller

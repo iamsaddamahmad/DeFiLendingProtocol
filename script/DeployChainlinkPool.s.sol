@@ -3,18 +3,17 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/SimpleLendingPool.sol";
-import "../src/MockPriceOracle.sol";
+import "../src/ChainlinkPriceOracle.sol";
 
-/// @notice Deploys MockPriceOracle and SimpleLendingPool together.
-/// @dev Reads all parameters from environment variables, so it works
-///      identically across every network defined in foundry.toml — just
-///      change --rpc-url.
-contract DeployLendingPool is Script {
-    function run() external returns (MockPriceOracle, SimpleLendingPool) {
+/// @notice Deploys ChainlinkPriceOracle (wrapping a real Chainlink feed)
+///         and SimpleLendingPool together.
+contract DeployChainlinkPool is Script {
+    function run() external returns (ChainlinkPriceOracle, SimpleLendingPool) {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address collateralToken = vm.envAddress("COLLATERAL_TOKEN_ADDRESS");
         address borrowToken = vm.envAddress("BORROW_TOKEN_ADDRESS");
-        uint256 initialPrice = vm.envUint("ORACLE_INITIAL_PRICE");
+        address chainlinkFeed = vm.envAddress("CHAINLINK_FEED_ADDRESS");
+        uint256 maxStaleness = vm.envUint("ORACLE_MAX_STALENESS");
         uint256 ltvBps = vm.envUint("LOAN_TO_VALUE_BPS");
         uint256 liqThresholdBps = vm.envUint("LIQUIDATION_THRESHOLD_BPS");
         uint256 liqBonusBps = vm.envUint("LIQUIDATION_BONUS_BPS");
@@ -24,8 +23,9 @@ contract DeployLendingPool is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        MockPriceOracle oracle = new MockPriceOracle(initialPrice, owner);
-        console.log("Oracle deployed to:", address(oracle));
+        ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(chainlinkFeed, maxStaleness);
+        console.log("Chainlink oracle deployed to:", address(oracle));
+        console.log("Live price read:", oracle.price());
 
         SimpleLendingPool pool = new SimpleLendingPool(
             collateralToken,
@@ -39,10 +39,8 @@ contract DeployLendingPool is Script {
             owner
         );
         console.log("Lending pool deployed to:", address(pool));
-        console.log("Chain ID:", block.chainid);
 
         vm.stopBroadcast();
-
         return (oracle, pool);
     }
 }
