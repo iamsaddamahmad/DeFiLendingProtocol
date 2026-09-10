@@ -57,10 +57,7 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     event Repaid(address indexed user, uint256 amount);
     event InterestAccrued(address indexed user, uint256 interestAmount);
     event Liquidated(
-        address indexed borrower,
-        address indexed liquidator,
-        uint256 debtRepaid,
-        uint256 collateralSeized
+        address indexed borrower, address indexed liquidator, uint256 debtRepaid, uint256 collateralSeized
     );
 
     error ZeroAmount();
@@ -85,13 +82,12 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
         address initialOwner
     ) Ownable(initialOwner) {
         if (
-            collateralToken_ == address(0) || borrowToken_ == address(0)
-                || oracle_ == address(0) || initialOwner == address(0)
+            collateralToken_ == address(0) || borrowToken_ == address(0) || oracle_ == address(0)
+                || initialOwner == address(0)
         ) revert ZeroAddress();
         if (
             loanToValueBps_ == 0 || liquidationThresholdBps_ <= loanToValueBps_
-                || liquidationThresholdBps_ > BPS_DENOMINATOR
-                || maxLiquidationCloseFactorBps_ == 0
+                || liquidationThresholdBps_ > BPS_DENOMINATOR || maxLiquidationCloseFactorBps_ == 0
                 || maxLiquidationCloseFactorBps_ > BPS_DENOMINATOR
         ) revert InvalidThresholds();
 
@@ -116,8 +112,7 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
             pos.lastUpdate = block.timestamp;
             return;
         }
-        uint256 interest = (pos.principal * annualInterestRateBps * elapsed)
-            / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
+        uint256 interest = (pos.principal * annualInterestRateBps * elapsed) / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
         if (interest > 0) {
             pos.accruedInterest += interest;
             emit InterestAccrued(user, interest);
@@ -136,8 +131,8 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
             return pos.principal + pos.accruedInterest;
         }
         uint256 elapsed = block.timestamp - pos.lastUpdate;
-        uint256 pendingInterest = (pos.principal * annualInterestRateBps * elapsed)
-            / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
+        uint256 pendingInterest =
+            (pos.principal * annualInterestRateBps * elapsed) / (BPS_DENOMINATOR * SECONDS_PER_YEAR);
         return pos.principal + pos.accruedInterest + pendingInterest;
     }
 
@@ -220,11 +215,7 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     /// @param repayAmount Amount of debt to repay. Must not exceed
     ///        `maxLiquidatable(borrower)` — call that function first to
     ///        find the current limit.
-    function liquidatePartial(address borrower, uint256 repayAmount)
-        external
-        nonReentrant
-        whenNotPaused
-    {
+    function liquidatePartial(address borrower, uint256 repayAmount) external nonReentrant whenNotPaused {
         if (repayAmount == 0) revert ZeroAmount();
         _accrue(borrower);
         Position storage pos = positions[borrower];
@@ -243,13 +234,10 @@ contract SimpleLendingPool is ReentrancyGuard, Pausable, Ownable2Step {
     ///      position's total collateral. Used by both full and partial
     ///      liquidation — the only difference between them is how much of
     ///      the total debt `debtToRepay` represents.
-    function _executeLiquidation(address borrower, Position storage pos, uint256 debtToRepay)
-        internal
-    {
+    function _executeLiquidation(address borrower, Position storage pos, uint256 debtToRepay) internal {
         uint256 collateralValue = _collateralValue(pos.collateral);
         uint256 seizeValue = debtToRepay + (debtToRepay * liquidationBonusBps / BPS_DENOMINATOR);
-        uint256 collateralToSeize =
-            collateralValue == 0 ? 0 : (seizeValue * pos.collateral) / collateralValue;
+        uint256 collateralToSeize = collateralValue == 0 ? 0 : (seizeValue * pos.collateral) / collateralValue;
         if (collateralToSeize > pos.collateral) {
             collateralToSeize = pos.collateral;
         }

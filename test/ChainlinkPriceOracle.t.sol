@@ -28,11 +28,7 @@ contract MockAggregator is AggregatorV3Interface {
         updatedAt = newUpdatedAt;
     }
 
-    function latestRoundData()
-        external
-        view
-        returns (uint80, int256, uint256, uint256, uint80)
-    {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (1, answer, updatedAt, updatedAt, 1);
     }
 }
@@ -81,9 +77,7 @@ contract ChainlinkPriceOracleTest is Test {
         MockAggregator agg = new MockAggregator(8, 0, block.timestamp);
         ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(address(agg), MAX_STALENESS);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ChainlinkPriceOracle.InvalidPrice.selector, int256(0))
-        );
+        vm.expectRevert(abi.encodeWithSelector(ChainlinkPriceOracle.InvalidPrice.selector, int256(0)));
         oracle.price();
     }
 
@@ -102,8 +96,7 @@ contract ChainlinkPriceOracleTest is Test {
         MockAggregator agg = new MockAggregator(8, 200_000_000_000, block.timestamp);
         ChainlinkPriceOracle oracle = new ChainlinkPriceOracle(address(agg), MAX_STALENESS);
 
-        (bool success, bytes memory data) =
-            address(oracle).staticcall(abi.encodeWithSignature("price()"));
+        (bool success, bytes memory data) = address(oracle).staticcall(abi.encodeWithSignature("price()"));
         assertTrue(success);
         assertEq(abi.decode(data, (uint256)), 2_000e18);
     }

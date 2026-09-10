@@ -11,13 +11,7 @@ interface AggregatorV3Interface {
     function latestRoundData()
         external
         view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 }
 
 /// @title ChainlinkPriceOracle
@@ -70,26 +64,26 @@ contract ChainlinkPriceOracle {
     ///      failure modes production systems must handle, not edge cases
     ///      to ignore).
     function price() external view returns (uint256) {
-    (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = feed.latestRoundData();
 
-    if (answer <= 0) revert InvalidPrice(answer);
+        if (answer <= 0) revert InvalidPrice(answer);
 
-    // A few seconds of validator-manipulable timestamp drift is immaterial
-    // against a staleness window measured in minutes/hours.
-    // forge-lint: disable-next-line(block-timestamp)
-    if (block.timestamp - updatedAt > maxStaleness) {
-        revert StalePrice(updatedAt, block.timestamp, maxStaleness);
-    }
+        // A few seconds of validator-manipulable timestamp drift is immaterial
+        // against a staleness window measured in minutes/hours.
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp - updatedAt > maxStaleness) {
+            revert StalePrice(updatedAt, block.timestamp, maxStaleness);
+        }
 
-    // Safe: answer > 0 is enforced by the InvalidPrice check above.
-    // forge-lint: disable-next-line(unsafe-typecast)
-    uint256 rawPrice = uint256(answer);
+        // Safe: answer > 0 is enforced by the InvalidPrice check above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint256 rawPrice = uint256(answer);
 
-    if (feedDecimals < 18) {
-        return rawPrice * (10 ** (18 - feedDecimals));
-    } else if (feedDecimals > 18) {
-        return rawPrice / (10 ** (feedDecimals - 18));
-    }
-    return rawPrice;
+        if (feedDecimals < 18) {
+            return rawPrice * (10 ** (18 - feedDecimals));
+        } else if (feedDecimals > 18) {
+            return rawPrice / (10 ** (feedDecimals - 18));
+        }
+        return rawPrice;
     }
 }

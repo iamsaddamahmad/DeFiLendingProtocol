@@ -104,9 +104,7 @@ contract SimpleLendingPoolTest is Test {
         uint256 maxBorrowable = pool.maxBorrow(alice);
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                SimpleLendingPool.ExceedsLoanToValue.selector, maxBorrowable + 1, maxBorrowable
-            )
+            abi.encodeWithSelector(SimpleLendingPool.ExceedsLoanToValue.selector, maxBorrowable + 1, maxBorrowable)
         );
         pool.borrow(maxBorrowable + 1);
         vm.stopPrank();
@@ -274,9 +272,7 @@ contract SimpleLendingPoolTest is Test {
         uint256 limit = pool.maxLiquidatable(alice);
 
         vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(SimpleLendingPool.ExceedsCloseFactor.selector, limit + 1, limit)
-        );
+        vm.expectRevert(abi.encodeWithSelector(SimpleLendingPool.ExceedsCloseFactor.selector, limit + 1, limit));
         pool.liquidatePartial(alice, limit + 1);
     }
 
